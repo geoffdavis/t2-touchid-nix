@@ -29,19 +29,53 @@
   ncmMac = "ac:de:48:00:11:22";
 
   # Brings the NCM link admin-up. IPv6 link-local is all the bridge needs and
-  # the kernel assigns it on its own; no IPv4, no DHCP.
+  # the kernel assigns it on its own; no IPv4, no DHCP. The link can come up
+  # with NO-CARRIER (observed at boot on a MacBookAir9,1 under t2bce), and
+  # then never gets a link-local address; rebinding cdc_ncm fixes it, which
+  # is also what t2linux's Fedora package does before starting the daemon.
   linkUp = pkgs.writeShellApplication {
     name = "t2-touchid-link-up";
     runtimeInputs = [pkgs.iproute2];
     text = ''
-      for dev in /sys/class/net/*; do
-        usb=$(readlink -f "$dev/device/..")
-        [[ -r $usb/idVendor && -r $usb/idProduct ]] || continue
-        [[ $(<"$usb/idVendor") == ${ncmVendor} && $(<"$usb/idProduct") == ${ncmProduct} ]] || continue
-        ip link set dev "''${dev##*/}" up
-        exit 0
-      done
-      echo "t2-touchid: no Apple ${ncmVendor}:${ncmProduct} CDC-NCM interface found" >&2
+      find_dev() {
+        local dev usb
+        for dev in /sys/class/net/*; do
+          usb=$(readlink -f "$dev/device/..")
+          [[ -r $usb/idVendor && -r $usb/idProduct ]] || continue
+          [[ $(<"$usb/idVendor") == ${ncmVendor} && $(<"$usb/idProduct") == ${ncmProduct} ]] || continue
+          echo "''${dev##*/}"
+          return 0
+        done
+        return 1
+      }
+
+      # Brings the link up, then waits up to $1 tenths of a second for carrier.
+      up_with_carrier() {
+        local dev
+        for ((i = 0; i < $1; i++)); do
+          if dev=$(find_dev); then
+            ip link set dev "$dev" up
+            [[ $(<"/sys/class/net/$dev/carrier") == 1 ]] 2>/dev/null && return 0
+          fi
+          sleep 0.1
+        done
+        return 1
+      }
+
+      if ! dev=$(find_dev); then
+        echo "t2-touchid: no Apple ${ncmVendor}:${ncmProduct} CDC-NCM interface found" >&2
+        exit 1
+      fi
+      up_with_carrier 30 && exit 0
+
+      echo "t2-touchid: $dev has no carrier; rebinding cdc_ncm" >&2
+      intf=$(basename "$(readlink -f "/sys/class/net/$dev/device")")
+      echo -n "$intf" > /sys/bus/usb/drivers/cdc_ncm/unbind
+      sleep 1
+      echo -n "$intf" > /sys/bus/usb/drivers/cdc_ncm/bind
+      up_with_carrier 100 && exit 0
+
+      echo "t2-touchid: CDC-NCM link has no carrier after rebind" >&2
       exit 1
     '';
   };
