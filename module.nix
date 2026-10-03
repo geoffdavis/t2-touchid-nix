@@ -182,7 +182,18 @@ in {
       systemd.services.fprintd = {
         requires = ["t2-touchid.service"];
         after = ["t2-touchid.service"];
-        environment.FP_VIRTUAL_DEVICE_STORAGE = socket;
+        environment = {
+          FP_VIRTUAL_DEVICE_STORAGE = socket;
+          # libfprint simulates sensor heating and, by default, disables a
+          # device after 3 minutes of continuous scanning ("Device disabled to
+          # prevent overheating"). A lock screen that keeps a verify running
+          # (hyprlock's native fingerprint) hits that after 3 minutes locked,
+          # reports verify-disconnected and stops offering the finger. The
+          # real sensor is the T2's, which has no such limit (macOS keeps it
+          # armed at its own lock screen), so turn the simulation off; any
+          # negative value means disabled.
+          FP_VIRTUAL_DEVICE_HOT_SECONDS = "-1";
+        };
         serviceConfig =
           {
             ReadWritePaths = ["/run/${runtimeDirectory}"];
